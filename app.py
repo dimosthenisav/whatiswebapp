@@ -202,6 +202,7 @@ def seed_database():
     """
     # Add some example terms
     example_terms = [
+        # Technical Terms
         ("API", "Application Programming Interface - a set of rules that allows different software applications to communicate with each other."),
         ("HTML", "HyperText Markup Language - the standard markup language for documents designed to be displayed in a web browser."),
         ("CSS", "Cascading Style Sheets - a style sheet language used for describing the presentation of a document written in HTML."),
@@ -211,7 +212,18 @@ def seed_database():
         ("REST", "Representational State Transfer - an architectural style for designing networked applications."),
         ("JSON", "JavaScript Object Notation - a lightweight data-interchange format that is easy for humans to read and write."),
         ("Git", "A distributed version control system for tracking changes in source code during software development."),
-        ("Docker", "A platform that uses OS-level virtualization to deliver software in packages called containers.")
+        ("Docker", "A platform that uses OS-level virtualization to deliver software in packages called containers."),
+        # Business Communication Terms
+        ("FYI", "For Your Information - A commonly used abbreviation in business communication to indicate that information is being passed along for awareness, without requiring any specific action."),
+        ("ASAP", "As Soon As Possible - Used to indicate urgency in completing a task or providing information."),
+        ("EOD", "End of Day - Refers to the end of the business day, commonly used as a deadline indicator."),
+        ("COB", "Close of Business - Similar to EOD, indicates the end of the working day."),
+        ("TL;DR", "Too Long; Didn't Read - Used to provide a brief summary of a longer text."),
+        ("ETA", "Estimated Time of Arrival - Used to indicate when something is expected to be completed or delivered."),
+        ("OOO", "Out of Office - Indicates that someone is not available at work, usually used in email automatic replies."),
+        ("WFH", "Work From Home - Indicates that an employee is working remotely from their home."),
+        ("EOW", "End of Week - Refers to the end of the work week, commonly used as a deadline indicator."),
+        ("IMO", "In My Opinion - Used to express a personal view or judgment on a matter.")
     ]
     
     # Add each term to the database
