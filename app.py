@@ -7,7 +7,7 @@ from slack_sdk.errors import SlackApiError
 import database as db
 import slack_utils
 import traceback
-from werkzeug.urls import quote as url_quote
+from urllib.parse import quote as url_quote
 import json
 import logging
 from datetime import datetime

@@ -18,7 +18,12 @@ RETRY_DELAY = 1  # seconds
 
 def get_redis_client():
     """Create and return a Redis client with retries."""
-    REDIS_URL = os.getenv('REDIS_TLS_URL', os.getenv('REDIS_URL', 'redis://localhost:6379'))
+    redis_url = os.getenv('REDIS_TLS_URL', os.getenv('REDIS_URL', 'redis://localhost:6379'))
+    
+    # Ensure URL has proper scheme
+    if not redis_url.startswith(('redis://', 'rediss://', 'unix://')):
+        redis_url = f"rediss://{redis_url}" if 'REDIS_TLS_URL' in os.environ else f"redis://{redis_url}"
+    
     logger.debug("Attempting to connect to Redis...")
     logger.debug(f"Environment variables present: REDIS_TLS_URL={'REDIS_TLS_URL' in os.environ}, REDIS_URL={'REDIS_URL' in os.environ}")
     
@@ -26,7 +31,7 @@ def get_redis_client():
         try:
             # Configure Redis client with SSL/TLS for Upstash
             client = redis.from_url(
-                REDIS_URL,
+                redis_url,
                 ssl=True,
                 ssl_cert_reqs=None,
                 decode_responses=True
