@@ -222,62 +222,71 @@ def delete_term():
 @app.route('/admin/analytics', methods=['GET'])
 def get_analytics():
     """
-    Admin endpoint to get usage analytics.
-    In a production environment, you would want to add authentication.
+    Admin endpoint to get usage analytics using Redis.
     """
-    # For demonstration purposes only - in a real app, add proper authentication
-    
-    # Connect to the database
-    import sqlite3
-    conn = sqlite3.connect(db.DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    
-    # Get the top 10 most queried terms
-    cursor.execute("""
-    SELECT term, COUNT(*) as count
-    FROM logs
-    GROUP BY term
-    ORDER BY count DESC
-    LIMIT 10
-    """)
-    top_terms = [dict(row) for row in cursor.fetchall()]
-    
-    # Get the number of queries per day for the last 7 days
-    cursor.execute("""
-    SELECT date(timestamp) as date, COUNT(*) as count
-    FROM logs
-    WHERE timestamp >= date('now', '-7 days')
-    GROUP BY date
-    ORDER BY date
-    """)
-    daily_queries = [dict(row) for row in cursor.fetchall()]
-    
-    # Get the total number of queries
-    cursor.execute("SELECT COUNT(*) as total FROM logs")
-    total_queries = cursor.fetchone()['total']
-    
-    # Get the number of unique users
-    cursor.execute("SELECT COUNT(DISTINCT user_id) as unique_users FROM logs")
-    unique_users = cursor.fetchone()['unique_users']
-    
-    # Get the success rate (percentage of queries that found a term)
-    cursor.execute("""
-    SELECT 
-        SUM(CASE WHEN found = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) as success_rate
-    FROM logs
-    """)
-    success_rate = cursor.fetchone()['success_rate']
-    
-    conn.close()
-    
-    return jsonify({
-        "top_terms": top_terms,
-        "daily_queries": daily_queries,
-        "total_queries": total_queries,
-        "unique_users": unique_users,
-        "success_rate": success_rate
-    })
+    try:
+        if db.redis_client is None:
+            raise Exception("Redis client is not initialized")
+
+        # Get all logs
+        logs = []
+        raw_logs = db.redis_client.lrange('logs', 0, -1)
+        for log in raw_logs:
+            logs.append(json.loads(log))
+
+        # Calculate analytics
+        term_counts = {}
+        daily_queries = {}
+        unique_users = set()
+        found_count = 0
+
+        for log in logs:
+            # Count terms
+            term = log.get('term', '')
+            term_counts[term] = term_counts.get(term, 0) + 1
+            
+            # Count daily queries
+            date = log.get('timestamp', '').split('T')[0]
+            daily_queries[date] = daily_queries.get(date, 0) + 1
+            
+            # Track unique users
+            unique_users.add(log.get('user_id', ''))
+            
+            # Track successful queries
+            if log.get('found', False):
+                found_count += 1
+
+        # Format the results
+        top_terms = [
+            {'term': term, 'count': count}
+            for term, count in sorted(term_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+        ]
+
+        daily_queries_list = [
+            {'date': date, 'count': count}
+            for date, count in sorted(daily_queries.items(), reverse=True)[:7]
+        ]
+
+        total_queries = len(logs)
+        success_rate = (found_count / total_queries * 100) if total_queries > 0 else 0
+
+        return jsonify({
+            "top_terms": top_terms,
+            "daily_queries": daily_queries_list,
+            "total_queries": total_queries,
+            "unique_users": len(unique_users),
+            "success_rate": success_rate
+        })
+    except Exception as e:
+        logger.error("Error in analytics!")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
+        return jsonify({
+            "error": "Internal Server Error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
 
 @app.route('/seed', methods=['GET'])
 def seed_database():
