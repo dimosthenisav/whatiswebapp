@@ -1,138 +1,197 @@
 import os
-import json
-from flask import Flask, request, jsonify, render_template
+import sys
+from flask import Flask, request, jsonify, render_template, redirect, url_for
 from dotenv import load_dotenv
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
 import database as db
 import slack_utils
+import traceback
+from werkzeug.urls import quote as url_quote
+import json
+import logging
+from datetime import datetime
 
 # Load environment variables from .env file
 load_dotenv()
 
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 # Initialize Flask app
 app = Flask(__name__)
+app.config['DEBUG'] = os.getenv('FLASK_DEBUG', 'False').lower() == 'true'
+
+# Initialize database
+try:
+    db.init_db()
+except Exception as e:
+    logger.error(f"Failed to initialize database: {str(e)}")
+    logger.error(traceback.format_exc())
+
+# Initialize Slack client
+SLACK_BOT_TOKEN = os.environ.get('SLACK_BOT_TOKEN')
+slack_client = WebClient(token=SLACK_BOT_TOKEN)
+
+# Print debug information
+logger.debug(f"Python version: {sys.version}")
+logger.debug(f"Current working directory: {os.getcwd()}")
+logger.debug(f"Directory contents: {os.listdir('.')}")
+logger.debug(f"Environment variables: REDIS_TLS_URL={'REDIS_TLS_URL' in os.environ}")
+
+@app.errorhandler(500)
+def handle_500(error):
+    logger.error("500 error occurred!")
+    logger.error(f"Error: {str(error)}")
+    logger.error(f"Traceback:\n{''.join(traceback.format_tb(sys.exc_info()[2]))}")
+    return jsonify({
+        "error": "Internal Server Error",
+        "message": str(error),
+        "traceback": traceback.format_exc()
+    }), 500
 
 @app.route('/')
 def index():
     """
     Simple health check endpoint.
     """
-    return "WhatIs Slack Bot is running!"
+    try:
+        # Test Redis connection
+        db.redis_client.ping()
+        return "WhatIs Slack Bot is running! Redis connection is working."
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return f"Error: {str(e)}", 500
 
 @app.route('/admin')
 def admin_dashboard():
     """
     Admin dashboard for managing terms and viewing analytics.
-    In a production environment, you would want to add authentication.
     """
-    return render_template('admin.html')
-
-@app.route('/slack/whatis', methods=['POST'])
-def slack_whatis():
-    """
-    Handle the /whatis slash command from Slack.
-    """
-    # Verify the request is coming from Slack
-    if not slack_utils.verify_slack_request(
-        request.get_data(),
-        request.headers.get('X-Slack-Request-Timestamp', ''),
-        request.headers.get('X-Slack-Signature', '')
-    ):
-        return jsonify({"error": "Invalid request"}), 403
-    
-    # Parse the form data from Slack
-    slack_data = request.form
-    
-    # Get the term from the text field
-    term = slack_data.get('text', '').strip()
-    
-    # Get user ID and channel ID
-    user_id = slack_data.get('user_id', '')
-    channel_id = slack_data.get('channel_id', '')
-    
-    # Get the response URL for delayed responses
-    response_url = slack_data.get('response_url', '')
-    
-    # If no term was provided, return a help message
-    if not term:
+    try:
+        logger.debug("Attempting to get all terms")
+        terms = db.get_all_terms()
+        logger.debug(f"Successfully retrieved {len(terms)} terms")
+        return render_template('admin.html', terms=terms)
+    except Exception as e:
+        logger.error("Error in admin_dashboard!")
+        logger.error(f"Error type: {type(e).__name__}")
+        logger.error(f"Error message: {str(e)}")
+        logger.error(f"Traceback:\n{''.join(traceback.format_tb(sys.exc_info()[2]))}")
         return jsonify({
-            "response_type": "ephemeral",
-            "text": "Please provide a term to look up. Usage: `/whatis [term]`"
+            "error": "Internal Server Error",
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+@app.route('/slack/command', methods=['POST'])
+def handle_command():
+    # Verify request is from Slack
+    if not request.form:
+        return jsonify({'error': 'Invalid request'}), 400
+    
+    # Get command text
+    text = request.form.get('text', '').strip()
+    user_id = request.form.get('user_id', '')
+    
+    if not text:
+        return jsonify({
+            'response_type': 'ephemeral',
+            'text': 'Please provide a term to look up. Usage: /whatis <term>'
         })
     
-    # Look up the term in the database
-    term_data = db.get_term(term)
+    # Look up the term
+    term_info = db.get_term(text)
     
-    # Log the query
-    db.log_query(user_id, term, found=bool(term_data))
+    if term_info:
+        # Log successful query
+        db.log_query(user_id, text, True)
+        
+        response = {
+            'response_type': 'in_channel',
+            'blocks': [
+                {
+                    'type': 'section',
+                    'text': {
+                        'type': 'mrkdwn',
+                        'text': f'*{term_info["term"]}*\n{term_info["definition"]}'
+                    }
+                }
+            ]
+        }
+    else:
+        # Log failed query
+        db.log_query(user_id, text, False)
+        
+        # Find similar terms
+        similar_terms = db.find_similar_terms(text)
+        
+        if similar_terms:
+            suggestions = '\n'.join([f'• {term["term"]}' for term in similar_terms[:3]])
+            response = {
+                'response_type': 'ephemeral',
+                'blocks': [
+                    {
+                        'type': 'section',
+                        'text': {
+                            'type': 'mrkdwn',
+                            'text': f'Term not found. Did you mean:\n{suggestions}'
+                        }
+                    }
+                ]
+            }
+        else:
+            response = {
+                'response_type': 'ephemeral',
+                'text': 'Term not found. Please check your spelling or add it to the glossary.'
+            }
     
-    # If the term wasn't found, look for similar terms
-    similar_terms = None
-    if not term_data:
-        similar_terms = db.find_similar_terms(term)
-    
-    # Format the response message
-    message = slack_utils.format_term_response(term_data, similar_terms)
-    
-    # Determine if the response should be public or private
-    # In public channels, make the response visible to everyone
-    # In direct messages, keep it private (ephemeral)
-    response_type = "in_channel" if not slack_utils.is_direct_message(channel_id) else "ephemeral"
-    
-    # Return the response
-    return jsonify({
-        "response_type": response_type,
-        "text": message
-    })
+    return jsonify(response)
 
-@app.route('/admin/terms', methods=['GET', 'POST', 'PUT', 'DELETE'])
-def manage_terms():
-    """
-    Admin endpoint to manage terms in the glossary.
-    This is a simple API endpoint for adding, updating, and deleting terms.
-    In a production environment, you would want to add authentication.
-    """
-    # For demonstration purposes only - in a real app, add proper authentication
+@app.route('/admin/add', methods=['POST'])
+def add_term():
+    term = request.form.get('term')
+    definition = request.form.get('definition')
     
-    if request.method == 'GET':
-        # Get all terms
-        terms = db.get_all_terms()
-        return jsonify(terms)
+    if not term or not definition:
+        return jsonify({'error': 'Both term and definition are required'}), 400
     
-    elif request.method == 'POST':
-        # Add a new term
-        data = request.json
-        if not data or 'term' not in data or 'definition' not in data:
-            return jsonify({"error": "Missing term or definition"}), 400
-        
-        success = db.add_term(data['term'], data['definition'])
-        if success:
-            return jsonify({"message": "Term added successfully"}), 201
-        else:
-            return jsonify({"error": "Term already exists"}), 409
+    success = db.add_term(term, definition)
     
-    elif request.method == 'PUT':
-        # Update an existing term
-        data = request.json
-        if not data or 'term' not in data or 'definition' not in data:
-            return jsonify({"error": "Missing term or definition"}), 400
-        
-        success = db.update_term(data['term'], data['definition'])
-        if success:
-            return jsonify({"message": "Term updated successfully"})
-        else:
-            return jsonify({"error": "Term not found"}), 404
+    if success:
+        return redirect(url_for('admin_dashboard'))
+    else:
+        return jsonify({'error': 'Term already exists'}), 400
+
+@app.route('/admin/update', methods=['POST'])
+def update_term():
+    term = request.form.get('term')
+    definition = request.form.get('definition')
     
-    elif request.method == 'DELETE':
-        # Delete a term
-        data = request.json
-        if not data or 'term' not in data:
-            return jsonify({"error": "Missing term"}), 400
-        
-        success = db.delete_term(data['term'])
-        if success:
-            return jsonify({"message": "Term deleted successfully"})
-        else:
-            return jsonify({"error": "Term not found"}), 404
+    if not term or not definition:
+        return jsonify({'error': 'Both term and definition are required'}), 400
+    
+    success = db.update_term(term, definition)
+    
+    if success:
+        return redirect(url_for('admin_dashboard'))
+    else:
+        return jsonify({'error': 'Term not found'}), 404
+
+@app.route('/admin/delete', methods=['POST'])
+def delete_term():
+    term = request.form.get('term')
+    
+    if not term:
+        return jsonify({'error': 'Term is required'}), 400
+    
+    success = db.delete_term(term)
+    
+    if success:
+        return redirect(url_for('admin_dashboard'))
+    else:
+        return jsonify({'error': 'Term not found'}), 404
 
 @app.route('/admin/analytics', methods=['GET'])
 def get_analytics():
@@ -232,12 +291,38 @@ def seed_database():
     
     return jsonify({"message": "Database seeded with example terms"})
 
-if __name__ == '__main__':
-    # Make sure the database is initialized
-    db.init_db()
-    
-    # Get the port from the environment variable or use 5000 as default
-    port = int(os.environ.get('PORT', 5000))
-    
-    # Run the Flask app
-    app.run(host='0.0.0.0', port=port, debug=True) 
+@app.route('/debug')
+def debug():
+    """Debug endpoint to check configuration."""
+    try:
+        debug_info = {
+            "python_version": sys.version,
+            "current_directory": os.getcwd(),
+            "directory_contents": os.listdir('.'),
+            "redis_url_exists": 'REDIS_TLS_URL' in os.environ,
+            "redis_connection": None,
+            "redis_ping": None,
+            "environment_variables": {
+                key: '[HIDDEN]' if 'SECRET' in key or 'URL' in key else value
+                for key, value in os.environ.items()
+            }
+        }
+        
+        try:
+            # Test Redis connection
+            db.redis_client.ping()
+            debug_info["redis_connection"] = "Success"
+            debug_info["redis_ping"] = "Success"
+        except Exception as e:
+            debug_info["redis_connection"] = f"Error: {str(e)}"
+            debug_info["redis_ping"] = f"Error: {str(e)}"
+        
+        return jsonify(debug_info)
+    except Exception as e:
+        return jsonify({
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+# Export the Flask app for Vercel
+application = app 
