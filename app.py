@@ -324,5 +324,5 @@ def debug():
             "traceback": traceback.format_exc()
         }), 500
 
-# Export the Flask app for Vercel
-application = app 
+# Remove any if __name__ == '__main__' block or application = app line
+# The WSGI entry point is now in wsgi.py 
