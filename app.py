@@ -42,34 +42,59 @@ logger.debug(f"Environment variables: REDIS_TLS_URL={'REDIS_TLS_URL' in os.envir
 
 @app.errorhandler(500)
 def handle_500(error):
+    """Handle internal server errors with detailed logging."""
+    error_info = {
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "traceback": traceback.format_exc(),
+        "python_version": sys.version,
+        "cwd": os.getcwd(),
+        "env_vars_present": {
+            "REDIS_TLS_URL": "REDIS_TLS_URL" in os.environ,
+            "REDIS_URL": "REDIS_URL" in os.environ,
+            "FLASK_DEBUG": "FLASK_DEBUG" in os.environ
+        }
+    }
+    
     logger.error("500 error occurred!")
-    logger.error(f"Error: {str(error)}")
-    logger.error(f"Traceback:\n{''.join(traceback.format_tb(sys.exc_info()[2]))}")
-    return jsonify({
-        "error": "Internal Server Error",
-        "message": str(error),
-        "traceback": traceback.format_exc()
-    }), 500
+    logger.error(f"Error type: {error_info['error_type']}")
+    logger.error(f"Error message: {error_info['error_message']}")
+    logger.error(f"Traceback:\n{error_info['traceback']}")
+    
+    return jsonify(error_info), 500
 
 @app.route('/')
 def index():
-    """
-    Simple health check endpoint.
-    """
+    """Health check endpoint with Redis connection test."""
     try:
+        if db.redis_client is None:
+            raise Exception("Redis client is not initialized")
+            
         # Test Redis connection
         db.redis_client.ping()
-        return "WhatIs Slack Bot is running! Redis connection is working."
+        return jsonify({
+            "status": "healthy",
+            "redis_connection": "connected",
+            "python_version": sys.version,
+            "current_directory": os.getcwd()
+        })
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}")
-        return f"Error: {str(e)}", 500
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "python_version": sys.version,
+            "current_directory": os.getcwd()
+        }), 500
 
 @app.route('/admin')
 def admin_dashboard():
-    """
-    Admin dashboard for managing terms and viewing analytics.
-    """
+    """Admin dashboard with enhanced error handling."""
     try:
+        if db.redis_client is None:
+            raise Exception("Redis client is not initialized")
+            
         logger.debug("Attempting to get all terms")
         terms = db.get_all_terms()
         logger.debug(f"Successfully retrieved {len(terms)} terms")
@@ -78,11 +103,12 @@ def admin_dashboard():
         logger.error("Error in admin_dashboard!")
         logger.error(f"Error type: {type(e).__name__}")
         logger.error(f"Error message: {str(e)}")
-        logger.error(f"Traceback:\n{''.join(traceback.format_tb(sys.exc_info()[2]))}")
+        logger.error(f"Traceback:\n{traceback.format_exc()}")
         return jsonify({
             "error": "Internal Server Error",
             "message": str(e),
-            "traceback": traceback.format_exc()
+            "traceback": traceback.format_exc(),
+            "redis_client_status": "not initialized" if db.redis_client is None else "initialized"
         }), 500
 
 @app.route('/slack/command', methods=['POST'])
