@@ -1,7 +1,7 @@
 import os
 import json
 from datetime import datetime
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 import redis
 import logging
 import sys
